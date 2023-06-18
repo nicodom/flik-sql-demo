@@ -1,77 +1,49 @@
-version: '2.1'
+version: '3.8'
 services:
   sql-client:
-    platform: linux/amd64/v8
-    image: jark/demo-sql-client:0.2
+    build: sql-client/.
+    command: bin/sql-client.sh
     depends_on:
-      - kafka
       - jobmanager
-      - elasticsearch
     environment:
-      FLINK_JOBMANAGER_HOST: jobmanager
-      ZOOKEEPER_CONNECT: zookeeper
-      KAFKA_BOOTSTRAP: kafka
-      MYSQL_HOST: mysql
-      ES_HOST: elasticsearch
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
   jobmanager:
-    image: flink:1.17.0-scala_2.12-java11
+    build: sql-client/.
     ports:
       - "8081:8081"
     command: jobmanager
+    volumes:
+      - flink_data:/tmp/
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
+        state.backend: filesystem
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        heartbeat.interval: 1000
+        heartbeat.timeout: 5000
+        rest.flamegraph.enabled: true
+        web.backpressure.refresh-interval: 10000
   taskmanager:
-    image: flink:1.17.0-scala_2.12-java11
+    build: sql-client/.
     depends_on:
       - jobmanager
     command: taskmanager
+    volumes:
+      - flink_data:/tmp/
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 10
-  datagen:
-    platform: linux/amd64/v8
-    image: jark/datagen:0.2
-    command: "java -classpath /opt/datagen/flink-sql-demo.jar myflink.SourceGenerator --input /opt/datagen/user_behavior.log --output kafka kafka:9094 --speedup 2000"
-    depends_on:
-      - kafka
-    environment:
-      ZOOKEEPER_CONNECT: zookeeper
-      KAFKA_BOOTSTRAP: kafka
-  mysql:
-    platform: linux/amd64/v8
-    image: jark/mysql-example:0.2
-    ports:
-      - "3306:3306"
-    environment:
-      - MYSQL_ROOT_PASSWORD=123456
-  zookeeper:
-    platform: linux/amd64/v8
-    image: wurstmeister/zookeeper:3.4.6
-    ports:
-      - "2181:2181"
-  kafka:
-    platform: linux/amd64/v8
-    image: wurstmeister/kafka:2.12-2.2.1
-    ports:
-      - "9092:9092"
-      - "9094:9094"
-    depends_on:
-      - zookeeper
-    environment:
-      - KAFKA_ADVERTISED_LISTENERS=INSIDE://:9094,OUTSIDE://localhost:9092
-      - KAFKA_LISTENERS=INSIDE://:9094,OUTSIDE://:9092
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
-      - KAFKA_INTER_BROKER_LISTENER_NAME=INSIDE
-      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_CREATE_TOPICS="user_behavior:1:1"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+        taskmanager.numberOfTaskSlots: 3
+        state.backend: filesystem
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        heartbeat.interval: 1000
+        heartbeat.timeout: 5000
   elasticsearch:
-    platform: linux/amd64/v8
     image: docker.elastic.co/elasticsearch/elasticsearch:7.6.0
     environment:
       - cluster.name=docker-cluster
@@ -89,7 +61,16 @@ services:
         soft: 65536
         hard: 65536
   kibana:
-    platform: linux/amd64/v8
     image: docker.elastic.co/kibana/kibana:7.6.0
     ports:
       - "5601:5601"
+  mysql:
+    image: mysql/mysql-server:latest
+    depends_on:
+      - elasticsearch
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=123456
+volumes:
+  flink_data:

@@ -38,7 +38,7 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 3
+        taskmanager.numberOfTaskSlots: 10
         state.backend: filesystem
         state.checkpoints.dir: file:///tmp/flink-checkpoints
         heartbeat.interval: 1000
@@ -65,12 +65,23 @@ services:
     ports:
       - "5601:5601"
   mysql:
-    image: jark/mysql-example:0.2
+    build: mysql/.
     depends_on:
       - elasticsearch
     ports:
       - "3306:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=123456
+  postgres:
+    container_name: flink-cdc-postgres
+    build: ./postgres
+    image: demo/postgres-pop
+    ports:
+     - 5432:5432
+    environment:
+     - POSTGRES_USER=postgres
+     - POSTGRES_PASSWORD=postgres
+    volumes:
+     - ${PWD}/postgres:/docker-entrypoint-initdb.d
 volumes:
   flink_data:

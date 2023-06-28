@@ -1,6 +1,7 @@
 version: '3.8'
 services:
   sql-client:
+    profiles: ["client-only"]
     build: sql-client/.
     command: bin/sql-client.sh
     depends_on:

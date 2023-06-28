@@ -1,11 +1,7 @@
 # flik-sql-demo
-
-
 docker compose up --build -d
 docker-compose up -d
 docker compose run sql-client
-
-
 
 # Table user_behavior
 CREATE TABLE user_behavior_bounded (
@@ -171,22 +167,13 @@ CREATE TABLE category_dim (
     'lookup.cache.ttl' = '10min'
 );
 
-# Elastic
-CREATE TABLE top_category (
-    category_name STRING PRIMARY KEY NOT ENFORCED,
-    buy_cnt BIGINT
-) WITH (
-    'connector' = 'elasticsearch-7',
-    'hosts' = 'http://elasticsearch:9200',
-    'index' = 'top_category'
-);
+select * from category_dim;
 
 CREATE VIEW rich_user_behavior AS
 SELECT U.user_id, U.item_id, U.behavior, C.name as category_name
 FROM user_behavior AS U LEFT JOIN category_dim FOR SYSTEM_TIME AS OF U.proctime AS C
 ON U.category_id = C.id;
 
-INSERT INTO top_category
 SELECT category_name, COUNT(*) buy_cnt
 FROM rich_user_behavior
 WHERE behavior = 'BUY'
@@ -229,7 +216,7 @@ confluent kafka topic create user_behavior --cluster lkc-v110vn
 ); -->
 
 CREATE TABLE user_behavior_kafka (
-  user_id BIGINT,
+    user_id BIGINT,
     item_id BIGINT,
     category_id BIGINT,
     behavior STRING,
@@ -249,15 +236,15 @@ CREATE TABLE user_behavior_kafka (
   'sink.partitioner' = 'fixed'
 );
 
-INSERT INTO user_behavior_kafka SELECT * FROM user_behavior;
-
 confluent kafka topic consume user_behavior --api-key 74JJHGK2LMJ5ZZFG
+
+INSERT INTO user_behavior_kafka SELECT * FROM user_behavior;
 
 SELECT * FROM user_behavior_kafka;
 SELECT browser, COUNT(user_id) FROM user_behavior_kafka GROUP BY browser;
 
 CREATE TABLE user_behavior_kafka_latest (
-  user_id BIGINT,
+    user_id BIGINT,
     item_id BIGINT,
     category_id BIGINT,
     behavior STRING,
@@ -269,13 +256,15 @@ CREATE TABLE user_behavior_kafka_latest (
   'topic' = 'user_behavior',
   'properties.group.id' = 'demoGroup',
   'scan.startup.mode' = 'latest-offset',
-  'properties.bootstrap.servers' = '<BOOTSTRAP_SERVER>',
+  'properties.bootstrap.servers' = 'pkc-z9doz.eu-west-1.aws.confluent.cloud:9092',
   'properties.security.protocol' = 'SASL_SSL',
   'properties.sasl.mechanism' = 'PLAIN',
-  'properties.sasl.jaas.config' = 'org.apache.kafka.common.security.plain.PlainLoginModule required username="<API_KEY>" password="<API_SECRET>";',
+  'properties.sasl.jaas.config' = 'org.apache.kafka.common.security.plain.PlainLoginModule required username="74JJHGK2LMJ5ZZFG" password="bMtgT++6k9Gs63FvfRHHp47lxKF1P87otmqq8qAA2AgAD1vOSYSHCUNnF9zo+tmi";',
   'value.format' = 'json',
   'sink.partitioner' = 'fixed'
-); 
+);
+
+SELECT browser, COUNT(user_id) FROM user_behavior_kafka_latest GROUP BY browser;
 
 # Watermarks
 -- Create source table
@@ -284,7 +273,7 @@ CREATE TABLE mobile_usage (
     client_ip STRING,
     ingest_time AS PROCTIME(),
     log_time TIMESTAMP_LTZ(3), 
-    WATERMARK FOR log_time AS log_time - INTERVAL '15' SECONDS
+    WATERMARK FOR log_time AS log_time - INTERVAL '30' SECONDS
 ) WITH (
   'connector' = 'faker', 
   'rows-per-second' = '50',
@@ -293,17 +282,30 @@ CREATE TABLE mobile_usage (
   'fields.log_time.expression' =  '#{date.past ''45'',''10'',''SECONDS''}'
 );
 
+select * from mobile_usage limit 20;
+
 -- Create sink table for rows that are non-late
-CREATE TABLE unique_users_per_window ( 
+<!-- CREATE TABLE unique_users_per_window ( 
     window_start TIMESTAMP(3), 
     window_end TIMESTAMP(3),
     ip_addresses BIGINT
 ) WITH (
   'connector' = 'blackhole'
+); -->
+
+CREATE TABLE unique_users_per_window ( 
+    window_start TIMESTAMP(3), 
+    window_end TIMESTAMP(3),
+    ip_addresses BIGINT,
+    PRIMARY KEY (window_start, window_end) NOT ENFORCED
+) WITH (
+    'connector' = 'elasticsearch-7', -- using elasticsearch connector
+    'hosts' = 'http://elasticsearch:9200',  -- elasticsearch address
+    'index' = 'unique_users_per_window'  -- elasticsearch index name, similar to database table name
 );
 
 -- Create sink table for rows that are late
-CREATE TABLE late_usage_events ( 
+<!-- CREATE TABLE late_usage_events ( 
     activity STRING, 
     client_ip STRING,
     ingest_time TIMESTAMP_LTZ(3),
@@ -311,7 +313,30 @@ CREATE TABLE late_usage_events (
     current_watermark TIMESTAMP_LTZ(3)    
 ) WITH (
   'connector' = 'blackhole'
+); -->
+
+CREATE TABLE mobile_usage_dlq (
+    activity STRING, 
+    client_ip STRING,
+    ingest_time TIMESTAMP(3),
+    log_time TIMESTAMP(3), 
+    current_watermark TIMESTAMP(3),
+    delay_in_seconds INTEGER
+) WITH (
+  'connector' = 'kafka',
+  'topic' = 'mobile_usage_dlq',
+  'properties.group.id' = 'demoGroup',
+  'scan.startup.mode' = 'earliest-offset',
+  'properties.bootstrap.servers' = 'pkc-z9doz.eu-west-1.aws.confluent.cloud:9092',
+  'properties.security.protocol' = 'SASL_SSL',
+  'properties.sasl.mechanism' = 'PLAIN',
+  'properties.sasl.jaas.config' = 'org.apache.kafka.common.security.plain.PlainLoginModule required username="74JJHGK2LMJ5ZZFG" password="bMtgT++6k9Gs63FvfRHHp47lxKF1P87otmqq8qAA2AgAD1vOSYSHCUNnF9zo+tmi";',
+  'value.format' = 'json',
+  'sink.partitioner' = 'fixed'
 );
+
+confluent kafka topic create mobile_usage_dlq
+confluent kafka topic consume mobile_usage_dlq
 
 -- Create a view with non-late data
 CREATE TEMPORARY VIEW mobile_data AS
@@ -325,22 +350,27 @@ CREATE TEMPORARY VIEW late_mobile_data AS
         WHERE CURRENT_WATERMARK(log_time) IS NOT NULL
               AND log_time <= CURRENT_WATERMARK(log_time);
 
-BEGIN STATEMENT SET;
+EXECUTE STATEMENT SET
+BEGIN
 
 -- Send all rows that are non-late to the sink for data that's on time
-INSERT INTO unique_users_per_window
+INSERT INTO unique_users_per_window 
     SELECT window_start, window_end, COUNT(DISTINCT client_ip) AS ip_addresses
       FROM TABLE(
         TUMBLE(TABLE mobile_data, DESCRIPTOR(log_time), INTERVAL '10' SECOND))
       GROUP BY window_start, window_end;
 
 -- Send all rows that are late to the sink for late data
-INSERT INTO late_usage_events
-    SELECT *, CURRENT_WATERMARK(log_time) as current_watermark from late_mobile_data;
+INSERT INTO mobile_usage_dlq
+    SELECT *, CURRENT_WATERMARK(log_time) as current_watermark, TIMESTAMPDIFF(SECOND, log_time, CURRENT_WATERMARK(log_time)) as delay_in_seconds from late_mobile_data;
       
 END;
 
-# postgres
+# SHOW JOB GRAPH, INTERESTING
+
+SELECT COUNT(*) FROM mobile_usage_dlq;
+
+# postgres cdc
 CREATE TABLE accident_claims (
     claim_id INT,
     claim_total FLOAT,
@@ -367,11 +397,17 @@ CREATE TABLE accident_claims (
 
 SELECT * FROM accident_claims;
 
+cat ./postgres_datagen.sql | docker exec -i flink-cdc-postgres psql -U postgres -d postgres
+
 SELECT accident_detail,
        SUM(claim_total) AS agg_claim_costs
 FROM accident_claims
 WHERE claim_status <> 'DENIED'
 GROUP BY accident_detail;
+
+set 'sql-client.execution.result-mode' = 'changelog';
+
+select * from accident_claims;
 
 cat ./postgres_datagen.sql | docker exec -i flink-cdc-postgres psql -U postgres -d postgres
 
